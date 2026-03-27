@@ -83,7 +83,9 @@ jobs:
           }
           $libSrc = Get-ChildItem $extractDir -Recurse -Directory -Filter "library" | Select-Object -First 1
           if ($libSrc) {
-            if (!(Test-Path $libraryDest)) { New-Item -ItemType Directory -Path $libraryDest -Force | Out-Null }
+            if (!(Test-Path $libraryDest)) {
+              New-Item -ItemType Directory -Path $libraryDest -Force | Out-Null
+            }
             Write-Host "Copying library files from $($libSrc.FullName) to $libraryDest"
             Copy-Item "$($libSrc.FullName)\*" $libraryDest -Force -Recurse
           } else {
@@ -99,4 +101,58 @@ jobs:
           $env:HIP_PATH = "${{ env.ROCM_ROOT }}"
           $env:ROCM_PATH = "${{ env.ROCM_ROOT }}"
           $bin = "${{ env.ROCM_BIN_PATH }}"
-          if (!(Test-Path build)) { New-Item -ItemType Directory -Path build | Out-Null
+          if (!(Test-Path build)) {
+            New-Item -ItemType Directory -Path build | Out-Null
+          }
+          cmake -S . -B build -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLAMA_HIPBLAS=ON `
+            -DCMAKE_C_COMPILER="$bin/clang.exe" `
+            -DCMAKE_CXX_COMPILER="$bin/clang++.exe" `
+            -DCMAKE_PREFIX_PATH="${{ env.ROCM_ROOT }}" `
+            -Dhip_DIR="${{ env.HIP_DIR_PATH }}" `
+            -Dhipblas_DIR="${{ env.HIPBLAS_DIR_PATH }}" `
+            -DAMDGPU_TARGETS=gfx1032 `
+            -DGPU_TARGETS=gfx1032
+          cmake --build build --config Release -v
+
+      - name: Assemble output package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = "${{ env.ROCM_BIN_PATH }}"
+          $outDir = "koboldcpp-rocm-output"
+          New-Item -ItemType Directory -Path $outDir | Out-Null
+          Copy-Item "build\bin\koboldcpp_hipblas.dll" "$outDir\" -Force
+          Copy-Item "$bin\hipblas.dll" "$outDir\" -Force
+          Copy-Item "$bin\rocblas.dll" "$outDir\" -Force
+          New-Item -ItemType Directory -Path "$outDir\rocblas\library" -Force | Out-Null
+          Copy-Item "$bin\rocblas\library\*" "$outDir\rocblas\library\" -Force -Recurse
+          Copy-Item "koboldcpp.py" "$outDir\" -Force
+          Copy-Item "*.dll" "$outDir\" -Force -ErrorAction SilentlyContinue
+          Write-Host "Output package contents:"
+          Get-ChildItem $outDir -Recurse | Select-Object FullName
+
+      - name: Copy logs for upload
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\rocm-install.log") { Copy-Item "C:\rocm-install.log" ".\rocm-install.log" -Force }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocm-build-logs
+          path: |
+            rocm-install.log
+            build/CMakeFiles/CMakeError.log
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeCache.txt
+
+      - name: Upload binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: koboldcpp-rocm-gfx1032
+          path: koboldcpp-rocm-output/**
